@@ -364,16 +364,20 @@ function Dashboard({profile, onLogout}){
   const [categorias,setCategorias] = useState([]);
   const [activeId,setActiveId] = useState(profile.plantel_id || null);
   const [loading,setLoading] = useState(true);
+  const [loadError,setLoadError] = useState("");
 
   useEffect(()=>{
     (async()=>{
-      const [{data:pl}, {data:cat}] = await Promise.all([
+      const [plRes, catRes] = await Promise.all([
         sb.from("planteles").select("*").order("nombre"),
         sb.from("categorias").select("*")
       ]);
-      setPlanteles(pl || []);
-      setCategorias(cat || []);
-      if(profile.rol==="general" && pl && pl.length) setActiveId(pl[0].id);
+      if(plRes.error || catRes.error){
+        setLoadError((plRes.error && plRes.error.message) || (catRes.error && catRes.error.message) || "Error desconocido");
+      }
+      setPlanteles(plRes.data || []);
+      setCategorias(catRes.data || []);
+      if(profile.rol==="general" && plRes.data && plRes.data.length) setActiveId(plRes.data[0].id);
       setLoading(false);
     })();
   },[]);
@@ -381,6 +385,16 @@ function Dashboard({profile, onLogout}){
   if(loading) return h("div",{className:"loading"},"Cargando tesorería...");
 
   const activePlantel = planteles.find(p=>p.id===activeId);
+
+  if(loadError) return h("div",{className:"card"},
+    h("div",{className:"error"}, "No se pudieron cargar los datos: "+loadError),
+    h("button",{className:"logout-btn", onClick:onLogout, style:{marginTop:12}},"Salir")
+  );
+
+  if(!activePlantel && profile.rol!=="general") return h("div",{className:"card"},
+    h("div",{className:"error"}, "Tu cuenta no tiene un plantel asignado todavía (plantel_id vacío o no coincide con ninguno). Avísale a Seba para revisar tu perfil."),
+    h("button",{className:"logout-btn", onClick:onLogout, style:{marginTop:12}},"Salir")
+  );
 
   return h("div",null,
     h("div",{className:"brandbar"},
