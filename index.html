@@ -158,6 +158,7 @@ function LoginView({onLogin}){
   const [password,setPassword] = useState("");
   const [error,setError] = useState("");
   const [loading,setLoading] = useState(false);
+  const [sentReset,setSentReset] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -166,6 +167,13 @@ function LoginView({onLogin}){
     setLoading(false);
     if(error){ setError("No pude iniciar sesión. Revisa el correo y la contraseña."); return; }
     onLogin();
+  };
+
+  const forgotPassword = async () => {
+    if(!email){ setError("Escribe tu correo arriba primero, luego toca este link de nuevo."); return; }
+    setError("");
+    await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + window.location.pathname });
+    setSentReset(true);
   };
 
   return h("div",null,
@@ -180,6 +188,44 @@ function LoginView({onLogin}){
         h("input",{type:"password",value:password,onChange:e=>setPassword(e.target.value),required:true}),
         error && h("div",{className:"error"},error),
         h("button",{className:"btn",disabled:loading,type:"submit"}, loading? "Ingresando...":"Ingresar")
+      ),
+      sentReset
+        ? h("p",{className:"subtitle",style:{marginTop:16}},"Te enviamos un correo para definir tu contraseña. Ábrelo desde este mismo celular.")
+        : h("button",{type:"button",onClick:forgotPassword,className:"logout-btn",style:{width:"100%",marginTop:16}},"¿Olvidaste tu contraseña?")
+    )
+  );
+}
+
+function RecoverPasswordView({onDone}){
+  const [password,setPassword] = useState("");
+  const [confirm,setConfirm] = useState("");
+  const [error,setError] = useState("");
+  const [loading,setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if(password.length < 6){ setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    if(password !== confirm){ setError("Las contraseñas no coinciden."); return; }
+    setLoading(true);
+    const { error } = await sb.auth.updateUser({ password });
+    setLoading(false);
+    if(error){ setError("No se pudo actualizar. Intenta pedir el link de nuevo."); return; }
+    onDone();
+  };
+
+  return h("div",null,
+    h("div",{className:"card login-card"},
+      h(Seal),
+      h("h1",{className:"title display"},"Nueva contraseña"),
+      h("p",{className:"subtitle"},"Defínela y listo, quedará guardada"),
+      h("form",{onSubmit:submit},
+        h("label",null,"Contraseña nueva"),
+        h("input",{type:"password",value:password,onChange:e=>setPassword(e.target.value),required:true}),
+        h("label",null,"Repítela"),
+        h("input",{type:"password",value:confirm,onChange:e=>setConfirm(e.target.value),required:true}),
+        error && h("div",{className:"error"},error),
+        h("button",{className:"btn",disabled:loading,type:"submit"}, loading?"Guardando...":"Guardar contraseña")
       )
     )
   );
@@ -366,6 +412,7 @@ function App(){
   const [session,setSession] = useState(null);
   const [profile,setProfile] = useState(null);
   const [checking,setChecking] = useState(true);
+  const [recovering,setRecovering] = useState(false);
 
   const loadProfile = async () => {
     const { data:{ user } } = await sb.auth.getUser();
@@ -380,7 +427,8 @@ function App(){
       setSession(data.session);
       if(data.session) loadProfile(); else setChecking(false);
     });
-    const { data: listener } = sb.auth.onAuthStateChange((_event, sess)=>{
+    const { data: listener } = sb.auth.onAuthStateChange((event, sess)=>{
+      if(event === "PASSWORD_RECOVERY"){ setRecovering(true); setChecking(false); return; }
       setSession(sess);
       if(sess) loadProfile();
     });
@@ -393,6 +441,7 @@ function App(){
   };
 
   if(checking) return h("div",{className:"loading"},"Cargando...");
+  if(recovering) return h(RecoverPasswordView,{onDone:()=>{ setRecovering(false); loadProfile(); }});
   if(!session || !profile) return h(LoginView,{onLogin:loadProfile});
   return h(Dashboard,{profile, onLogout});
 }
