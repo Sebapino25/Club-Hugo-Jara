@@ -117,6 +117,12 @@
   .tx-amount.ingreso{color:var(--green);}
   .tx-amount.gasto{color:var(--rose);}
   .empty{text-align:center; color:var(--text-dim); font-size:13px; padding:20px 0;}
+  .icon-btn{background:none; border:none; font-size:16px; padding:4px; cursor:pointer; line-height:1;}
+  .editing-banner{
+    background:rgba(198,161,91,0.12); border:1px solid var(--gold-dim); color:var(--gold);
+    font-size:12px; padding:9px 12px; border-radius:10px; margin-bottom:12px;
+  }
+  .link-btn{background:none; border:none; color:var(--gold); text-decoration:underline; font-size:12px; padding:0; cursor:pointer;}
 
   .toast{
     position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
@@ -127,6 +133,28 @@
   @keyframes fadeUp{from{opacity:0; transform:translate(-50%,10px);} to{opacity:1; transform:translate(-50%,0);}}
 
   .loading{text-align:center; color:var(--text-dim); padding:60px 0; font-size:14px;}
+
+  .jugador-row{border-bottom:1px solid var(--border); padding:10px 0;}
+  .jugador-row:last-child{border-bottom:none;}
+  .jugador-head{display:flex; justify-content:space-between; align-items:center; cursor:pointer;}
+  .jugador-nombre{font-size:14px; font-weight:600;}
+  .jugador-status{font-size:11px; color:var(--text-dim); margin-top:2px;}
+  .status-ok{color:var(--green);}
+  .status-beca_50{color:var(--gold);}
+  .status-variable{color:var(--text-dim);}
+  .status-nada, .status-galleta{color:var(--rose);}
+  .jugador-saldo{font-family:'Archivo Black',sans-serif; font-size:13px;}
+  .jugador-saldo.debe{color:var(--rose);}
+  .jugador-saldo.ok{color:var(--green);}
+  .jugador-detail{margin-top:12px; padding-top:12px; border-top:1px dashed var(--border);}
+  .mes-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:8px;}
+  .mes-cell label{font-size:10px; margin:0 0 4px;}
+  .mes-cell input{padding:8px; font-size:13px;}
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:50;
+    display:flex; align-items:flex-end; justify-content:center;
+  }
+  .modal-card{width:100%; max-width:520px; margin:0; border-radius:20px 20px 0 0; max-height:85vh; overflow-y:auto;}
 </style>
 </head>
 <body>
@@ -142,6 +170,10 @@ const SUPABASE_KEY = "sb_publishable_CSZNHe6gJk8z1t-iT89HgA_ifSfmbpg";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CLP = (n) => "$" + Math.round(n || 0).toLocaleString("es-CL");
+const MESES = [3,4,5,6,7,8,9,10,11];
+const MES_LABEL = {3:"Mar",4:"Abr",5:"May",6:"Jun",7:"Jul",8:"Ago",9:"Sep",10:"Oct",11:"Nov"};
+const STATUS_LABEL = {ok:"Al día", beca_50:"Beca 50%", variable:"Cuota variable", nada:"No paga", galleta:"Galleta"};
+const STATUS_MULT = {ok:1, beca_50:0.5, variable:0, nada:0, galleta:0};
 
 function Seal(){
   return h("div",{className:"seal-wrap"},
@@ -233,7 +265,7 @@ function RecoverPasswordView({onDone}){
   );
 }
 
-function TransaccionForm({plantelId, categorias, onSaved, eventosPrevios}){
+function TransaccionForm({plantelId, categorias, onSaved, eventosPrevios, editingTx, onCancelEdit}){
   const [tipo,setTipo] = useState("ingreso");
   const [categoriaId,setCategoriaId] = useState("");
   const [monto,setMonto] = useState("");
@@ -245,15 +277,44 @@ function TransaccionForm({plantelId, categorias, onSaved, eventosPrevios}){
   const opciones = categorias.filter(c=>c.tipo===tipo);
 
   useEffect(()=>{
+    if(editingTx){
+      const cat = categorias.find(c=>c.id===editingTx.categoria_id);
+      setTipo((cat && cat.tipo) || "ingreso");
+      setCategoriaId(editingTx.categoria_id);
+      setMonto(String(editingTx.monto));
+      setFecha(editingTx.fecha);
+      setDescripcion(editingTx.descripcion || "");
+      setEvento(editingTx.evento || "");
+    }
+  },[editingTx]);
+
+  useEffect(()=>{
+    if(editingTx) return; // don't override the just-loaded values on first render
     if(opciones.length && !opciones.find(o=>o.id===categoriaId)){
       setCategoriaId(opciones[0].id);
     }
   },[tipo, categorias]);
 
+  const resetForm = () => {
+    setMonto(""); setDescripcion(""); setEvento(""); setTipo("ingreso");
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if(!monto || !categoriaId) return;
     setSaving(true);
+    if(editingTx){
+      const { error } = await sb.from("transacciones").update({
+        categoria_id: categoriaId,
+        monto: parseFloat(monto),
+        fecha,
+        descripcion,
+        evento: evento || null
+      }).eq("id", editingTx.id);
+      setSaving(false);
+      if(!error){ resetForm(); onSaved(); }
+      return;
+    }
     const { data:{ user } } = await sb.auth.getUser();
     const { error } = await sb.from("transacciones").insert({
       plantel_id: plantelId,
@@ -266,12 +327,14 @@ function TransaccionForm({plantelId, categorias, onSaved, eventosPrevios}){
     });
     setSaving(false);
     if(!error){
-      setMonto(""); setDescripcion(""); setEvento("");
+      resetForm();
       onSaved();
     }
   };
 
   return h("form",{onSubmit:submit},
+    editingTx && h("div",{className:"editing-banner"}, "Editando movimiento — ",
+      h("button",{type:"button", className:"link-btn", onClick:onCancelEdit},"cancelar")),
     h("div",{className:"type-toggle"},
       h("button",{type:"button", className:"type-btn ingreso"+(tipo==="ingreso"?" active":""), onClick:()=>setTipo("ingreso")},"Ingreso"),
       h("button",{type:"button", className:"type-btn gasto"+(tipo==="gasto"?" active":""), onClick:()=>setTipo("gasto")},"Gasto")
@@ -289,11 +352,11 @@ function TransaccionForm({plantelId, categorias, onSaved, eventosPrevios}){
     h("datalist",{id:"eventos-list"}, (eventosPrevios||[]).map(ev=> h("option",{key:ev, value:ev}))),
     h("label",null,"Descripción (opcional)"),
     h("input",{type:"text", value:descripcion, onChange:e=>setDescripcion(e.target.value), placeholder:"Ej: Carne para asado"}),
-    h("button",{className:"btn", disabled:saving, type:"submit"}, saving?"Guardando...":"Registrar")
+    h("button",{className:"btn", disabled:saving, type:"submit"}, saving?"Guardando...":(editingTx?"Guardar cambios":"Registrar"))
   );
 }
 
-function TransaccionList({items, categorias}){
+function TransaccionList({items, categorias, onEdit, onDelete}){
   if(!items.length) return h("div",{className:"empty"},"Todavía no hay movimientos registrados.");
   const catMap = {};
   categorias.forEach(c=>catMap[c.id]=c);
@@ -306,9 +369,229 @@ function TransaccionList({items, categorias}){
           h("div",{className:"tx-cat"}, cat.nombre || "—", tx.evento && h("span",{className:"tx-evento"}, " · "+tx.evento)),
           h("div",{className:"tx-desc"}, tx.fecha + (tx.descripcion?" · "+tx.descripcion:""))
         ),
-        h("div",{className:"tx-amount "+tipo}, (tipo==="gasto"?"-":"+")+CLP(tx.monto))
+        h("div",{style:{display:"flex",alignItems:"center",gap:"10px"}},
+          h("div",{className:"tx-amount "+tipo}, (tipo==="gasto"?"-":"+")+CLP(tx.monto)),
+          h("button",{type:"button", className:"icon-btn", onClick:()=>onEdit(tx), "aria-label":"Editar"},"✏️"),
+          h("button",{type:"button", className:"icon-btn", onClick:()=>onDelete(tx), "aria-label":"Eliminar"},"🗑️")
+        )
       );
     })
+  );
+}
+
+async function fetchCuotasRecaudadas(plantelId){
+  const { data: jugs } = await sb.from("jugadores").select("id").eq("plantel_id", plantelId);
+  const ids = (jugs||[]).map(j=>j.id);
+  if(!ids.length) return 0;
+  const { data: pagos } = await sb.from("pagos_cuota").select("monto").in("jugador_id", ids);
+  return (pagos||[]).reduce((s,p)=>s+parseFloat(p.monto),0);
+}
+
+function JugadorRow({jugador, cuotaBase, pagos, onChangePago, onEditJugador}){
+  const [open,setOpen] = useState(false);
+  const mult = STATUS_MULT[jugador.status];
+  const potencial = mult>0
+    ? MESES.reduce((s,m)=> s + (cuotaBase[m]||0)*mult, 0)
+    : (jugador.monto_personalizado ? jugador.monto_personalizado * MESES.length : 0);
+  const real = MESES.reduce((s,m)=> s + (pagos[m]||0), 0);
+  const saldo = potencial - real;
+
+  return h("div",{className:"jugador-row"},
+    h("div",{className:"jugador-head", onClick:()=>setOpen(!open)},
+      h("div",null,
+        h("div",{className:"jugador-nombre"}, jugador.nombre),
+        h("div",{className:"jugador-status status-"+jugador.status}, STATUS_LABEL[jugador.status])
+      ),
+      h("div",{className:"jugador-saldo "+(saldo>0?"debe":"ok")}, saldo>0? "Debe "+CLP(saldo) : "Al día")
+    ),
+    open && h("div",{className:"jugador-detail"},
+      jugador.pendiente_arrastre>0 && h("div",{className:"tx-desc",style:{marginBottom:8}}, "Arrastre 2025: "+CLP(jugador.pendiente_arrastre)),
+      h("div",{className:"mes-grid"},
+        MESES.map(m => h("div",{key:m, className:"mes-cell"},
+          h("label",null, MES_LABEL[m]),
+          h("input",{
+            type:"number", inputMode:"numeric",
+            defaultValue: pagos[m] || "",
+            placeholder:"0",
+            onBlur:(e)=>onChangePago(jugador.id, m, e.target.value)
+          })
+        ))
+      ),
+      h("button",{type:"button", className:"logout-btn", style:{width:"100%",marginTop:12}, onClick:()=>onEditJugador(jugador)}, "Editar estado / arrastre")
+    )
+  );
+}
+
+function JugadoresPanel({plantel}){
+  const [jugadores,setJugadores] = useState([]);
+  const [cuotaBase,setCuotaBase] = useState({});
+  const [pagosByJugador,setPagosByJugador] = useState({});
+  const [loading,setLoading] = useState(true);
+  const [showAdd,setShowAdd] = useState(false);
+  const [showConfig,setShowConfig] = useState(false);
+  const [editJugador,setEditJugador] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    const { data: jugs } = await sb.from("jugadores").select("*").eq("plantel_id", plantel.id).order("nombre");
+    const ids = (jugs||[]).map(j=>j.id);
+    const [{data:base}, {data:pagos}] = await Promise.all([
+      sb.from("cuota_base").select("*").eq("plantel_id", plantel.id),
+      ids.length ? sb.from("pagos_cuota").select("*").in("jugador_id", ids) : Promise.resolve({data:[]})
+    ]);
+    const baseMap = {};
+    (base||[]).forEach(b=> baseMap[b.mes] = parseFloat(b.monto));
+    const pagosMap = {};
+    (pagos||[]).forEach(p=>{
+      if(!pagosMap[p.jugador_id]) pagosMap[p.jugador_id] = {};
+      pagosMap[p.jugador_id][p.mes] = parseFloat(p.monto);
+    });
+    setJugadores(jugs||[]);
+    setCuotaBase(baseMap);
+    setPagosByJugador(pagosMap);
+    setLoading(false);
+  };
+
+  useEffect(()=>{ load(); },[plantel.id]);
+
+  const onChangePago = async (jugadorId, mes, valorStr) => {
+    const monto = parseFloat(valorStr || "0") || 0;
+    await sb.from("pagos_cuota").upsert({ jugador_id: jugadorId, mes, monto }, { onConflict: "jugador_id,mes" });
+    load();
+  };
+
+  const totals = useMemo(()=>{
+    let potencial=0, real=0;
+    const morosos = [];
+    jugadores.forEach(j=>{
+      const mult = STATUS_MULT[j.status];
+      const pagos = pagosByJugador[j.id] || {};
+      const pot = mult>0 ? MESES.reduce((s,m)=> s+(cuotaBase[m]||0)*mult,0) : (j.monto_personalizado ? j.monto_personalizado*MESES.length : 0);
+      const rea = MESES.reduce((s,m)=> s+(pagos[m]||0),0);
+      potencial += pot; real += rea;
+      if(pot - rea > 0) morosos.push({ nombre:j.nombre, monto: pot-rea });
+    });
+    morosos.sort((a,b)=>b.monto-a.monto);
+    return { potencial, real, morosidad: potencial-real, morosos };
+  },[jugadores, pagosByJugador, cuotaBase]);
+
+  if(loading) return h("div",{className:"loading"},"Cargando jugadores...");
+
+  return h("div",null,
+    h("div",{className:"summary-grid"},
+      h("div",{className:"summary-box"}, h("div",{className:"label"},"Recaudado"), h("div",{className:"value ingreso"}, CLP(totals.real))),
+      h("div",{className:"summary-box"}, h("div",{className:"label"},"Potencial"), h("div",{className:"value"}, CLP(totals.potencial))),
+      h("div",{className:"summary-box"}, h("div",{className:"label"},"Morosidad"), h("div",{className:"value gasto"}, CLP(totals.morosidad)))
+    ),
+    totals.morosos.length>0 && h("div",{className:"card"},
+      h("div",{className:"section-title"},"Alertas · jugadores con deuda"),
+      totals.morosos.map(m=> h("div",{key:m.nombre, className:"tx-item"},
+        h("div",{className:"tx-cat"}, m.nombre),
+        h("div",{className:"tx-amount gasto"}, CLP(m.monto))
+      ))
+    ),
+    h("div",{className:"card"},
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("div",{className:"section-title"},"Plantel"),
+        h("div",{style:{display:"flex",gap:8}},
+          h("button",{type:"button", className:"logout-btn", onClick:()=>setShowConfig(true)},"⚙️ Cuotas"),
+          h("button",{type:"button", className:"logout-btn", onClick:()=>setShowAdd(true)},"+ Jugador")
+        )
+      ),
+      jugadores.map(j => h(JugadorRow,{
+        key:j.id, jugador:j, cuotaBase, pagos:pagosByJugador[j.id]||{},
+        onChangePago, onEditJugador:setEditJugador
+      }))
+    ),
+    showAdd && h(JugadorFormModal,{plantelId:plantel.id, onClose:()=>{setShowAdd(false); load();}}),
+    editJugador && h(JugadorFormModal,{plantelId:plantel.id, jugador:editJugador, onClose:()=>{setEditJugador(null); load();}}),
+    showConfig && h(CuotaBaseModal,{plantelId:plantel.id, cuotaBase, onClose:()=>{setShowConfig(false); load();}})
+  );
+}
+
+function JugadorFormModal({plantelId, jugador, onClose}){
+  const [nombre,setNombre] = useState(jugador ? jugador.nombre : "");
+  const [status,setStatus] = useState(jugador ? jugador.status : "ok");
+  const [pendiente,setPendiente] = useState(jugador ? jugador.pendiente_arrastre : 0);
+  const [montoPersonalizado,setMontoPersonalizado] = useState(jugador && jugador.monto_personalizado ? jugador.monto_personalizado : "");
+  const [saving,setSaving] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    const payload = {
+      nombre, status,
+      pendiente_arrastre: parseFloat(pendiente)||0,
+      monto_personalizado: montoPersonalizado ? parseFloat(montoPersonalizado) : null
+    };
+    if(jugador){
+      await sb.from("jugadores").update(payload).eq("id", jugador.id);
+    } else {
+      await sb.from("jugadores").insert({ plantel_id: plantelId, ...payload });
+    }
+    setSaving(false);
+    onClose();
+  };
+
+  return h("div",{className:"modal-backdrop"},
+    h("div",{className:"card modal-card"},
+      h("div",{className:"section-title"}, jugador ? "Editar jugador" : "Nuevo jugador"),
+      h("form",{onSubmit:submit},
+        h("label",null,"Nombre"),
+        h("input",{type:"text", value:nombre, onChange:e=>setNombre(e.target.value), required:true}),
+        h("label",null,"Estado"),
+        h("select",{value:status, onChange:e=>setStatus(e.target.value)},
+          Object.keys(STATUS_LABEL).map(k=> h("option",{key:k, value:k}, STATUS_LABEL[k]))
+        ),
+        status==="variable" && h("div",null,
+          h("label",null,"Monto mensual acordado"),
+          h("input",{type:"number", value:montoPersonalizado, onChange:e=>setMontoPersonalizado(e.target.value)})
+        ),
+        h("label",null,"Arrastre temporada anterior"),
+        h("input",{type:"number", value:pendiente, onChange:e=>setPendiente(e.target.value)}),
+        h("div",{style:{display:"flex",gap:8,marginTop:16}},
+          h("button",{type:"button",className:"logout-btn",style:{flex:1},onClick:onClose},"Cancelar"),
+          h("button",{className:"btn",style:{flex:1,marginTop:0},disabled:saving,type:"submit"}, saving?"Guardando...":"Guardar")
+        )
+      )
+    )
+  );
+}
+
+function CuotaBaseModal({plantelId, cuotaBase, onClose}){
+  const [valores,setValores] = useState(()=>{
+    const v = {};
+    MESES.forEach(m=> v[m] = cuotaBase[m] || "");
+    return v;
+  });
+  const [saving,setSaving] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    await Promise.all(MESES.map(m =>
+      sb.from("cuota_base").upsert({ plantel_id: plantelId, mes: m, monto: parseFloat(valores[m])||0 }, { onConflict: "plantel_id,mes" })
+    ));
+    setSaving(false);
+    onClose();
+  };
+
+  return h("div",{className:"modal-backdrop"},
+    h("div",{className:"card modal-card"},
+      h("div",{className:"section-title"},"Cuota mensual base (jugador al día)"),
+      h("form",{onSubmit:submit},
+        h("div",{className:"mes-grid"},
+          MESES.map(m => h("div",{key:m, className:"mes-cell"},
+            h("label",null, MES_LABEL[m]),
+            h("input",{type:"number", value:valores[m], onChange:e=>setValores({...valores,[m]:e.target.value})})
+          ))
+        ),
+        h("div",{style:{display:"flex",gap:8,marginTop:16}},
+          h("button",{type:"button",className:"logout-btn",style:{flex:1},onClick:onClose},"Cancelar"),
+          h("button",{className:"btn",style:{flex:1,marginTop:0},disabled:saving,type:"submit"}, saving?"Guardando...":"Guardar")
+        )
+      )
+    )
   );
 }
 
@@ -316,44 +599,51 @@ function PlantelPanel({plantel, categorias, showComision}){
   const [txs,setTxs] = useState([]);
   const [loading,setLoading] = useState(true);
   const [toast,setToast] = useState("");
+  const [editingTx,setEditingTx] = useState(null);
+  const [cuotasReal,setCuotasReal] = useState(0);
+  const [seccion,setSeccion] = useState("movimientos");
 
   const load = async () => {
     setLoading(true);
-    const { data } = await sb.from("transacciones")
-      .select("*")
-      .eq("plantel_id", plantel.id)
-      .order("fecha",{ascending:false});
+    const [{data}, cuotas] = await Promise.all([
+      sb.from("transacciones").select("*").eq("plantel_id", plantel.id).order("fecha",{ascending:false}),
+      fetchCuotasRecaudadas(plantel.id)
+    ]);
     setTxs(data || []);
+    setCuotasReal(cuotas);
     setLoading(false);
   };
 
-  useEffect(()=>{ load(); },[plantel.id]);
+  useEffect(()=>{ load(); setEditingTx(null); },[plantel.id]);
 
   const eventosPrevios = useMemo(()=>
     [...new Set(txs.map(t=>t.evento).filter(Boolean))]
   ,[txs]);
 
   const totals = useMemo(()=>{
-    let ingreso=0, gasto=0, comisionable=0;
+    let otrosIngresos=0, gasto=0;
     const catMap = {};
     categorias.forEach(c=>catMap[c.id]=c);
     txs.forEach(tx=>{
       const monto = parseFloat(tx.monto);
       const cat = catMap[tx.categoria_id] || {};
-      if(cat.tipo==="ingreso"){
-        ingreso += monto;
-        const nombre = (cat.nombre||"").toLowerCase();
-        if(nombre.includes("matr")||nombre.includes("mensual")) comisionable += monto;
-      } else {
-        gasto += monto;
-      }
+      if(cat.tipo==="ingreso"){ otrosIngresos += monto; } else { gasto += monto; }
     });
-    return { ingreso, gasto, saldo: ingreso-gasto, comision: comisionable * (plantel.comision_pct/100) };
-  },[txs, categorias]);
+    const ingreso = otrosIngresos + cuotasReal;
+    return { ingreso, gasto, saldo: ingreso-gasto, comision: cuotasReal * (plantel.comision_pct/100) };
+  },[txs, categorias, cuotasReal]);
 
   const onSaved = () => {
-    setToast("Registrado · Mario Marcel, Tesorería");
+    setToast(editingTx ? "Actualizado · Mario Marcel, Tesorería" : "Registrado · Mario Marcel, Tesorería");
+    setEditingTx(null);
     setTimeout(()=>setToast(""),2200);
+    load();
+  };
+
+  const onDelete = async (tx) => {
+    if(!window.confirm("¿Eliminar este movimiento? Esta acción no se puede deshacer.")) return;
+    await sb.from("transacciones").delete().eq("id", tx.id);
+    if(editingTx && editingTx.id === tx.id) setEditingTx(null);
     load();
   };
 
@@ -364,15 +654,82 @@ function PlantelPanel({plantel, categorias, showComision}){
       h("div",{className:"summary-box"}, h("div",{className:"label"},"Saldo"), h("div",{className:"value"}, CLP(totals.saldo))),
       showComision && h("div",{className:"summary-box"}, h("div",{className:"label"},"Comisión ("+plantel.comision_pct+"%)"), h("div",{className:"value comision"}, CLP(totals.comision)))
     ),
-    h("div",{className:"card"},
-      h("div",{className:"section-title"},"Registrar movimiento"),
-      h(TransaccionForm,{plantelId:plantel.id, categorias, onSaved, eventosPrevios})
+    h("div",{className:"tabs"},
+      h("div",{className:"tab"+(seccion==="movimientos"?" active":""), onClick:()=>setSeccion("movimientos")},"Movimientos"),
+      h("div",{className:"tab"+(seccion==="jugadores"?" active":""), onClick:()=>setSeccion("jugadores")},"Jugadores")
     ),
-    h("div",{className:"card"},
-      h("div",{className:"section-title"},"Movimientos"),
-      loading? h("div",{className:"empty"},"Cargando...") : h(TransaccionList,{items:txs, categorias})
+    seccion==="jugadores" && h(JugadoresPanel,{plantel}),
+    seccion==="movimientos" && h("div",null,
+      h("div",{className:"card"},
+        h("div",{className:"section-title"}, editingTx ? "Editar movimiento" : "Registrar movimiento"),
+        h(TransaccionForm,{
+          key: editingTx ? editingTx.id : "new-"+plantel.id,
+          plantelId:plantel.id, categorias, onSaved, eventosPrevios,
+          editingTx, onCancelEdit:()=>setEditingTx(null)
+        })
+      ),
+      h("div",{className:"card"},
+        h("div",{className:"section-title"},"Movimientos"),
+        loading? h("div",{className:"empty"},"Cargando...") : h(TransaccionList,{items:txs, categorias, onEdit:setEditingTx, onDelete})
+      )
     ),
     h(Toast,{message:toast})
+  );
+}
+
+function ResumenGeneral({planteles, categorias}){
+  const [txs,setTxs] = useState([]);
+  const [cuotasPorPlantel,setCuotasPorPlantel] = useState({});
+  const [loading,setLoading] = useState(true);
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true);
+      const [{data}, cuotasEntries] = await Promise.all([
+        sb.from("transacciones").select("*").in("plantel_id", planteles.map(p=>p.id)),
+        Promise.all(planteles.map(async pl => [pl.id, await fetchCuotasRecaudadas(pl.id)]))
+      ]);
+      setTxs(data || []);
+      setCuotasPorPlantel(Object.fromEntries(cuotasEntries));
+      setLoading(false);
+    })();
+  },[planteles]);
+
+  const porPlantel = useMemo(()=>{
+    const catMap = {};
+    categorias.forEach(c=>catMap[c.id]=c);
+    return planteles.map(pl => {
+      let otrosIngresos=0, gasto=0;
+      txs.filter(t=>t.plantel_id===pl.id).forEach(tx=>{
+        const monto = parseFloat(tx.monto);
+        const cat = catMap[tx.categoria_id] || {};
+        if(cat.tipo==="ingreso"){ otrosIngresos += monto; } else { gasto += monto; }
+      });
+      const cuotas = cuotasPorPlantel[pl.id] || 0;
+      const ingreso = otrosIngresos + cuotas;
+      const comision = cuotas * (pl.comision_pct/100);
+      return { plantel: pl, ingreso, gasto, saldo: ingreso-gasto, comision };
+    });
+  },[txs, categorias, planteles, cuotasPorPlantel]);
+
+  const totalComision = porPlantel.reduce((s,p)=>s+p.comision,0);
+
+  if(loading) return h("div",{className:"loading"},"Cargando resumen...");
+
+  return h("div",null,
+    h("div",{className:"card"},
+      h("div",{className:"label"},"Total a depositarte (suma de comisiones)"),
+      h("div",{className:"value comision",style:{fontSize:"28px",marginTop:8}}, CLP(totalComision))
+    ),
+    porPlantel.map(p => h("div",{key:p.plantel.id, className:"card"},
+      h("div",{className:"section-title"}, p.plantel.nombre+" · "+p.plantel.tesorero_nombre),
+      h("div",{className:"summary-grid"},
+        h("div",{className:"summary-box"}, h("div",{className:"label"},"Recaudado"), h("div",{className:"value ingreso"}, CLP(p.ingreso))),
+        h("div",{className:"summary-box"}, h("div",{className:"label"},"Gastos"), h("div",{className:"value gasto"}, CLP(p.gasto))),
+        h("div",{className:"summary-box"}, h("div",{className:"label"},"Saldo del plantel"), h("div",{className:"value"}, CLP(p.saldo))),
+        h("div",{className:"summary-box"}, h("div",{className:"label"},"Te deben ("+p.plantel.comision_pct+"%)"), h("div",{className:"value comision"}, CLP(p.comision)))
+      )
+    ))
   );
 }
 
@@ -394,7 +751,7 @@ function Dashboard({profile, onLogout}){
       }
       setPlanteles(plRes.data || []);
       setCategorias(catRes.data || []);
-      if(profile.rol==="general" && plRes.data && plRes.data.length) setActiveId(plRes.data[0].id);
+      if(profile.rol==="general") setActiveId("resumen");
       setLoading(false);
     })();
   },[]);
@@ -425,12 +782,17 @@ function Dashboard({profile, onLogout}){
       h("button",{className:"logout-btn", onClick:onLogout},"Salir")
     ),
     profile.rol==="general" && h("div",{className:"tabs"},
+      h("div",{
+        className:"tab"+(activeId==="resumen"?" active":""),
+        onClick:()=>setActiveId("resumen")
+      }, "Resumen"),
       planteles.map(p => h("div",{
         key:p.id,
         className:"tab"+(p.id===activeId?" active":""),
         onClick:()=>setActiveId(p.id)
       }, p.nombre))
     ),
+    activeId==="resumen" && profile.rol==="general" && h(ResumenGeneral,{planteles, categorias}),
     activePlantel && h(PlantelPanel,{
       plantel:activePlantel,
       categorias,
