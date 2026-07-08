@@ -541,9 +541,11 @@ async function sincronizarEnVivo(plantel){
 
 // Extraído de importarPlanilla para reutilizar en la sincronización en vivo
 async function guardarJugadoresParseados(plantelId, jugadoresParsed){
-  const { data: existentes } = await sb.from("jugadores").select("*").eq("plantel_id", plantelId);
+  const { data: existentes, error: errExistentes } = await sb.from("jugadores").select("*").eq("plantel_id", plantelId);
+  if(errExistentes) throw new Error("No pude leer el roster actual: "+errExistentes.message);
   const porNombre = {};
   (existentes||[]).forEach(j=> porNombre[j.nombre.toLowerCase()] = j);
+  const errores = [];
 
   for(const jp of jugadoresParsed){
     const key = jp.nombre.toLowerCase();
@@ -555,16 +557,22 @@ async function guardarJugadoresParseados(plantelId, jugadoresParsed){
       payload.importado_real = jp.importado_real;
     }
     if(jugadorId){
-      await sb.from("jugadores").update(payload).eq("id", jugadorId);
+      const { error } = await sb.from("jugadores").update(payload).eq("id", jugadorId);
+      if(error){ errores.push(jp.nombre+": "+error.message); continue; }
     } else {
-      const { data } = await sb.from("jugadores").insert(payload).select().single();
+      const { data, error } = await sb.from("jugadores").insert(payload).select().single();
+      if(error || !data){ errores.push(jp.nombre+": "+(error ? error.message : "sin datos de vuelta")); continue; }
       jugadorId = data.id;
     }
     if(jp.modo==="mensual" && jp.cuotas){
       for(const [mes, monto] of Object.entries(jp.cuotas)){
-        await sb.from("pagos_cuota").upsert({ jugador_id: jugadorId, mes: parseInt(mes), monto }, { onConflict:"jugador_id,mes" });
+        const { error } = await sb.from("pagos_cuota").upsert({ jugador_id: jugadorId, mes: parseInt(mes), monto }, { onConflict:"jugador_id,mes" });
+        if(error){ errores.push(jp.nombre+" (mes "+mes+"): "+error.message); }
       }
     }
+  }
+  if(errores.length){
+    throw new Error(`${jugadoresParsed.length - errores.length}/${jugadoresParsed.length} guardados. Errores: `+errores.slice(0,3).join(" | "));
   }
 }
 
