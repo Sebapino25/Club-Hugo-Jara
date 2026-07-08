@@ -9,6 +9,8 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 <style>
   :root{
     --bg:#120E0D;
@@ -170,8 +172,8 @@ const SUPABASE_KEY = "sb_publishable_CSZNHe6gJk8z1t-iT89HgA_ifSfmbpg";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CLP = (n) => "$" + Math.round(n || 0).toLocaleString("es-CL");
-const MESES = [3,4,5,6,7,8,9,10,11];
-const MES_LABEL = {3:"Mar",4:"Abr",5:"May",6:"Jun",7:"Jul",8:"Ago",9:"Sep",10:"Oct",11:"Nov"};
+const MESES = [3,4,5,6,7,8,9,10,11,12];
+const MES_LABEL = {3:"Mar",4:"Abr",5:"May",6:"Jun",7:"Jul",8:"Ago",9:"Sep",10:"Oct",11:"Nov",12:"Dic"};
 const STATUS_LABEL = {ok:"Al día", beca_50:"Beca 50%", variable:"Cuota variable", nada:"No paga", galleta:"Galleta"};
 const STATUS_MULT = {ok:1, beca_50:0.5, variable:0, nada:0, galleta:0};
 
@@ -380,20 +382,29 @@ function TransaccionList({items, categorias, onEdit, onDelete}){
 }
 
 async function fetchCuotasRecaudadas(plantelId){
-  const { data: jugs } = await sb.from("jugadores").select("id").eq("plantel_id", plantelId);
-  const ids = (jugs||[]).map(j=>j.id);
-  if(!ids.length) return 0;
-  const { data: pagos } = await sb.from("pagos_cuota").select("monto").in("jugador_id", ids);
-  return (pagos||[]).reduce((s,p)=>s+parseFloat(p.monto),0);
+  const { data: jugs } = await sb.from("jugadores").select("id, importado_real").eq("plantel_id", plantelId);
+  const lista = jugs||[];
+  const importadoSum = lista.filter(j=>j.importado_real!=null).reduce((s,j)=>s+parseFloat(j.importado_real),0);
+  const idsGrid = lista.filter(j=>j.importado_real==null).map(j=>j.id);
+  let gridSum = 0;
+  if(idsGrid.length){
+    const { data: pagos } = await sb.from("pagos_cuota").select("monto").in("jugador_id", idsGrid);
+    gridSum = (pagos||[]).reduce((s,p)=>s+parseFloat(p.monto),0);
+  }
+  return importadoSum + gridSum;
 }
 
-function JugadorRow({jugador, cuotaBase, pagos, onChangePago, onEditJugador}){
+function JugadorRow({jugador, cuotaBase, pagos, onChangePago, onEditJugador, readOnly}){
   const [open,setOpen] = useState(false);
+  const esImportado = jugador.importado_potencial != null;
   const mult = STATUS_MULT[jugador.status];
-  const potencial = mult>0
-    ? MESES.reduce((s,m)=> s + (cuotaBase[m]||0)*mult, 0)
-    : (jugador.monto_personalizado ? jugador.monto_personalizado * MESES.length : 0);
-  const real = MESES.reduce((s,m)=> s + (pagos[m]||0), 0);
+  const potencial = esImportado
+    ? parseFloat(jugador.importado_potencial)
+    : (mult>0 ? MESES.reduce((s,m)=> s + (cuotaBase[m]||0)*mult, 0)
+              : (jugador.monto_personalizado ? jugador.monto_personalizado * MESES.length : 0));
+  const real = esImportado
+    ? parseFloat(jugador.importado_real)
+    : MESES.reduce((s,m)=> s + (pagos[m]||0), 0);
   const saldo = potencial - real;
 
   return h("div",{className:"jugador-row"},
@@ -402,23 +413,216 @@ function JugadorRow({jugador, cuotaBase, pagos, onChangePago, onEditJugador}){
         h("div",{className:"jugador-nombre"}, jugador.nombre),
         h("div",{className:"jugador-status status-"+jugador.status}, STATUS_LABEL[jugador.status])
       ),
-      h("div",{className:"jugador-saldo "+(saldo>0?"debe":"ok")}, saldo>0? "Debe "+CLP(saldo) : "Al día")
+      h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+        h("div",{className:"jugador-saldo "+(saldo>0?"debe":"ok")}, saldo>0? "Debe "+CLP(saldo) : "Al día"),
+        saldo>0 && h(NotificarMorosoButton,{nombre:jugador.nombre, monto:saldo})
+      )
     ),
     open && h("div",{className:"jugador-detail"},
       jugador.pendiente_arrastre>0 && h("div",{className:"tx-desc",style:{marginBottom:8}}, "Arrastre 2025: "+CLP(jugador.pendiente_arrastre)),
-      h("div",{className:"mes-grid"},
-        MESES.map(m => h("div",{key:m, className:"mes-cell"},
-          h("label",null, MES_LABEL[m]),
-          h("input",{
-            type:"number", inputMode:"numeric",
-            defaultValue: pagos[m] || "",
-            placeholder:"0",
-            onBlur:(e)=>onChangePago(jugador.id, m, e.target.value)
-          })
-        ))
-      ),
-      h("button",{type:"button", className:"logout-btn", style:{width:"100%",marginTop:12}, onClick:()=>onEditJugador(jugador)}, "Editar estado / arrastre")
+      esImportado
+        ? h("div",{className:"tx-desc"}, "Datos importados desde tu planilla: potencial "+CLP(potencial)+", pagado "+CLP(real)+". Vuelve a importar el archivo para actualizar.")
+        : h("div",{className:"mes-grid"},
+            MESES.map(m => h("div",{key:m, className:"mes-cell"},
+              h("label",null, MES_LABEL[m]),
+              h("input",{
+                type:"number", inputMode:"numeric",
+                defaultValue: pagos[m] || "",
+                placeholder:"0",
+                readOnly: !!readOnly,
+                onBlur: readOnly ? undefined : (e)=>onChangePago(jugador.id, m, e.target.value)
+              })
+            ))
+          ),
+      !readOnly && h("button",{type:"button", className:"logout-btn", style:{width:"100%",marginTop:12}, onClick:()=>onEditJugador(jugador)}, "Editar estado / arrastre")
     )
+  );
+}
+
+// --- Parsers de planillas: cada tesorero tiene su propio formato ---
+
+function parseMonto(v){
+  if(v==null || v==="") return 0;
+  if(typeof v === "number") return v;
+  const n = parseFloat(String(v).replace(/[^0-9,.-]/g,"").replace(/\./g,"").replace(",","."));
+  return isNaN(n) ? 0 : n;
+}
+
+// Formato Memo (Senior Sábado): jugador x mes, columnas D=pendiente, E..M=cuota1..9
+function parseMemoSheet(rows){
+  const statusMap = { 'OK':'ok','NADA':'nada','GALLETA':'galleta','GALLETA JUNIOR':'galleta','BECA 50%':'beca_50','CUOTA VARIABLE':'variable' };
+  const out = [];
+  rows.forEach(row=>{
+    const nombre = row[1];
+    const statusRaw = row[2];
+    if(!nombre || !statusRaw || !statusMap[statusRaw]) return;
+    const pendiente = parseMonto(row[3]);
+    const cuotas = {};
+    for(let i=0;i<9;i++){ const v = row[4+i]; if(v!=null && v!=="") cuotas[3+i] = parseMonto(v); }
+    out.push({ nombre: String(nombre).trim(), status: statusMap[statusRaw], pendiente_arrastre: pendiente, cuotas, modo:"mensual" });
+  });
+  return out;
+}
+
+// Formato Sergio (Senior Jueves): totales ya calculados por su propia planilla (cuotas fraccionadas, no mensuales)
+function parseSergioSheet(rows){
+  const out = [];
+  rows.forEach(row=>{
+    const nombre = row[1];
+    if(!nombre || typeof nombre !== "string") return;
+    const primerSemestre = row[9];
+    const formaPago = row[12];
+    let status = "ok";
+    if((primerSemestre && String(primerSemestre).toUpperCase().includes("GALLETA")) ) status = "galleta";
+    else if(formaPago && String(formaPago).toLowerCase().includes("no paga")) status = "nada";
+    const aPagar = parseMonto(row[16]);
+    const pagado = parseMonto(row[25]);
+    if(aPagar===0 && pagado===0 && status==="ok") return; // fila vacía
+    out.push({ nombre: String(nombre).trim(), status, importado_potencial: aPagar, importado_real: pagado, modo:"importado" });
+  });
+  return out;
+}
+
+// Formato Nacho (Junior Sábado): monto directo en $ por mes, pero cada jugador con su propio valor mensual
+function parseNachoSheet(rows){
+  const out = [];
+  // fila 1 = encabezados, datos desde fila 2 (índice 1)
+  for(let i=1;i<rows.length;i++){
+    const row = rows[i];
+    const nombre = row[0];
+    if(!nombre || typeof nombre !== "string") continue;
+    const proyeccion = parseMonto(row[16]);
+    const cuotas = {};
+    // índice3=Matrícula(mes3), índice4..12=Cuota1..9(mes4..12)
+    for(let m=3; m<=12; m++){
+      const v = row[m];
+      if(v!=null && v!=="") cuotas[m] = parseMonto(v);
+    }
+    out.push({
+      nombre: String(nombre).trim(),
+      status: proyeccion>0 ? "variable" : "nada",
+      monto_personalizado: proyeccion>0 ? proyeccion : null,
+      pendiente_arrastre: 0,
+      cuotas, modo:"mensual"
+    });
+  }
+  return out;
+}
+
+const PARSERS = {
+  "Senior Sábado": { sheet:"Hoja1", parser:parseMemoSheet },
+  "Senior Jueves": { sheet:"Pagos", parser:parseSergioSheet },
+  "Junior Sábado": { sheet:"Cuota 2026", parser:parseNachoSheet }
+};
+
+// --- Hojas de Google conectadas en vivo (solo lectura, se sincroniza cada vez que se abre la pestaña) ---
+const LIVE_SHEETS = {
+  "Junior Sábado": { sheetId: "1MoVVTU-hrrC6oOuyAUamRnYtYWVe78Ja", gid: "432185634", parser: parseNachoSheet },
+  "Senior Jueves": { sheetId: "1dlIz3NdoDL1ZCEe5WMaFqQWRcSYP6Sb1KDzEXp0FZtg", gid: "1921497641", parser: parseSergioSheet }
+};
+
+async function fetchGoogleSheetRows(sheetId, gid){
+  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error("No se pudo leer la hoja de Google (¿sigue compartida como 'cualquiera con el link'?).");
+  const text = await res.text();
+  const parsed = Papa.parse(text, { skipEmptyLines:true });
+  return parsed.data;
+}
+
+async function sincronizarEnVivo(plantel){
+  const config = LIVE_SHEETS[plantel.nombre];
+  if(!config) return null;
+  const rows = await fetchGoogleSheetRows(config.sheetId, config.gid);
+  const jugadoresParsed = config.parser(rows);
+  await guardarJugadoresParseados(plantel.id, jugadoresParsed);
+  return jugadoresParsed.length;
+}
+
+// Extraído de importarPlanilla para reutilizar en la sincronización en vivo
+async function guardarJugadoresParseados(plantelId, jugadoresParsed){
+  const { data: existentes } = await sb.from("jugadores").select("*").eq("plantel_id", plantelId);
+  const porNombre = {};
+  (existentes||[]).forEach(j=> porNombre[j.nombre.toLowerCase()] = j);
+
+  for(const jp of jugadoresParsed){
+    const key = jp.nombre.toLowerCase();
+    let jugadorId = porNombre[key] ? porNombre[key].id : null;
+    const payload = { plantel_id: plantelId, nombre: jp.nombre, status: jp.status, pendiente_arrastre: jp.pendiente_arrastre||0 };
+    if(jp.monto_personalizado != null) payload.monto_personalizado = jp.monto_personalizado;
+    if(jp.modo==="importado"){
+      payload.importado_potencial = jp.importado_potencial;
+      payload.importado_real = jp.importado_real;
+    }
+    if(jugadorId){
+      await sb.from("jugadores").update(payload).eq("id", jugadorId);
+    } else {
+      const { data } = await sb.from("jugadores").insert(payload).select().single();
+      jugadorId = data.id;
+    }
+    if(jp.modo==="mensual" && jp.cuotas){
+      for(const [mes, monto] of Object.entries(jp.cuotas)){
+        await sb.from("pagos_cuota").upsert({ jugador_id: jugadorId, mes: parseInt(mes), monto }, { onConflict:"jugador_id,mes" });
+      }
+    }
+  }
+}
+
+async function importarPlanilla(plantel, file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type:"array" });
+  const config = PARSERS[plantel.nombre];
+  if(!config) throw new Error("Todavía no tengo el formato de planilla de este plantel.");
+  const sheetName = wb.SheetNames.includes(config.sheet) ? config.sheet : wb.SheetNames[0];
+  const sheet = wb.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header:1, raw:true });
+  const jugadoresParsed = config.parser(rows);
+  if(!jugadoresParsed.length) throw new Error("No encontré filas de jugadores en el archivo.");
+  await guardarJugadoresParseados(plantel.id, jugadoresParsed);
+  return jugadoresParsed.length;
+}
+
+function ImportarPlanillaButton({plantel, onDone}){
+  const [busy,setBusy] = useState(false);
+  const [msg,setMsg] = useState("");
+  const inputRef = { current:null };
+
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    setBusy(true); setMsg("");
+    try{
+      const n = await importarPlanilla(plantel, file);
+      setMsg(`Listo: ${n} jugadores actualizados.`);
+      onDone();
+    }catch(err){
+      setMsg(err.message || "No se pudo importar el archivo.");
+    }
+    setBusy(false);
+    e.target.value = "";
+  };
+
+  return h("div",null,
+    h("label",{className:"logout-btn", style:{display:"inline-block",cursor:"pointer"}},
+      busy ? "Importando..." : "📥 Importar planilla",
+      h("input",{type:"file", accept:".xlsx,.xls,.csv", style:{display:"none"}, onChange:handleFile, disabled:busy})
+    ),
+    msg && h("div",{className:"tx-desc",style:{marginTop:6}}, msg)
+  );
+}
+
+function NotificarMorosoButton({nombre, monto}){
+  const [showMsg,setShowMsg] = useState(false);
+  const texto = `Hola ${nombre.split(" ")[0]}! Somos de la tesorería de Club Hugo Jara. Te escribimos porque tienes una cuota pendiente de ${CLP(monto)}. Cualquier duda, avísanos. ¡Gracias! ⚽`;
+
+  const copiar = () => {
+    navigator.clipboard.writeText(texto);
+    setShowMsg("Copiado ✓ Pégalo en WhatsApp o mail");
+  };
+
+  return h("div",null,
+    h("button",{type:"button", className:"icon-btn", onClick:copiar, "aria-label":"Notificar"},"💬"),
+    showMsg && h("div",{className:"tx-desc"}, showMsg)
   );
 }
 
@@ -430,9 +634,25 @@ function JugadoresPanel({plantel}){
   const [showAdd,setShowAdd] = useState(false);
   const [showConfig,setShowConfig] = useState(false);
   const [editJugador,setEditJugador] = useState(null);
+  const esLive = !!LIVE_SHEETS[plantel.nombre];
+  const [syncMsg,setSyncMsg] = useState("");
+  const [syncing,setSyncing] = useState(false);
+
+  const sync = async () => {
+    if(!esLive) return;
+    setSyncing(true);
+    try{
+      await sincronizarEnVivo(plantel);
+      setSyncMsg("Sincronizado ✓ "+new Date().toLocaleTimeString("es-CL",{hour:"2-digit",minute:"2-digit"}));
+    }catch(err){
+      setSyncMsg(err.message || "No se pudo sincronizar con Google Sheets.");
+    }
+    setSyncing(false);
+  };
 
   const load = async () => {
     setLoading(true);
+    if(esLive) await sync();
     const { data: jugs } = await sb.from("jugadores").select("*").eq("plantel_id", plantel.id).order("nombre");
     const ids = (jugs||[]).map(j=>j.id);
     const [{data:base}, {data:pagos}] = await Promise.all([
@@ -464,10 +684,16 @@ function JugadoresPanel({plantel}){
     let potencial=0, real=0;
     const morosos = [];
     jugadores.forEach(j=>{
-      const mult = STATUS_MULT[j.status];
-      const pagos = pagosByJugador[j.id] || {};
-      const pot = mult>0 ? MESES.reduce((s,m)=> s+(cuotaBase[m]||0)*mult,0) : (j.monto_personalizado ? j.monto_personalizado*MESES.length : 0);
-      const rea = MESES.reduce((s,m)=> s+(pagos[m]||0),0);
+      let pot, rea;
+      if(j.importado_potencial != null){
+        pot = parseFloat(j.importado_potencial);
+        rea = parseFloat(j.importado_real);
+      } else {
+        const mult = STATUS_MULT[j.status];
+        const pagos = pagosByJugador[j.id] || {};
+        pot = mult>0 ? MESES.reduce((s,m)=> s+(cuotaBase[m]||0)*mult,0) : (j.monto_personalizado ? j.monto_personalizado*MESES.length : 0);
+        rea = MESES.reduce((s,m)=> s+(pagos[m]||0),0);
+      }
       potencial += pot; real += rea;
       if(pot - rea > 0) morosos.push({ nombre:j.nombre, monto: pot-rea });
     });
@@ -487,25 +713,36 @@ function JugadoresPanel({plantel}){
       h("div",{className:"section-title"},"Alertas · jugadores con deuda"),
       totals.morosos.map(m=> h("div",{key:m.nombre, className:"tx-item"},
         h("div",{className:"tx-cat"}, m.nombre),
-        h("div",{className:"tx-amount gasto"}, CLP(m.monto))
+        h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+          h("div",{className:"tx-amount gasto"}, CLP(m.monto)),
+          h(NotificarMorosoButton,{nombre:m.nombre, monto:m.monto})
+        )
       ))
     ),
     h("div",{className:"card"},
-      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}},
         h("div",{className:"section-title"},"Plantel"),
-        h("div",{style:{display:"flex",gap:8}},
-          h("button",{type:"button", className:"logout-btn", onClick:()=>setShowConfig(true)},"⚙️ Cuotas"),
-          h("button",{type:"button", className:"logout-btn", onClick:()=>setShowAdd(true)},"+ Jugador")
-        )
+        esLive
+          ? h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+              h("span",{className:"tx-desc"},"🔄 En vivo con Google Sheets"),
+              h("button",{type:"button", className:"logout-btn", onClick:sync, disabled:syncing}, syncing?"Actualizando...":"Actualizar ahora")
+            )
+          : h("div",{style:{display:"flex",gap:8,flexWrap:"wrap"}},
+              h(ImportarPlanillaButton,{plantel, onDone:load}),
+              h("button",{type:"button", className:"logout-btn", onClick:()=>setShowConfig(true)},"⚙️ Cuotas"),
+              h("button",{type:"button", className:"logout-btn", onClick:()=>setShowAdd(true)},"+ Jugador")
+            )
       ),
+      esLive && syncMsg && h("div",{className:"tx-desc",style:{marginBottom:10}}, syncMsg),
+      esLive && h("div",{className:"tx-desc",style:{marginBottom:10}}, "Los datos se editan en la hoja de Google, no aquí."),
       jugadores.map(j => h(JugadorRow,{
         key:j.id, jugador:j, cuotaBase, pagos:pagosByJugador[j.id]||{},
-        onChangePago, onEditJugador:setEditJugador
+        onChangePago, onEditJugador:setEditJugador, readOnly:esLive
       }))
     ),
-    showAdd && h(JugadorFormModal,{plantelId:plantel.id, onClose:()=>{setShowAdd(false); load();}}),
-    editJugador && h(JugadorFormModal,{plantelId:plantel.id, jugador:editJugador, onClose:()=>{setEditJugador(null); load();}}),
-    showConfig && h(CuotaBaseModal,{plantelId:plantel.id, cuotaBase, onClose:()=>{setShowConfig(false); load();}})
+    !esLive && showAdd && h(JugadorFormModal,{plantelId:plantel.id, onClose:()=>{setShowAdd(false); load();}}),
+    !esLive && editJugador && h(JugadorFormModal,{plantelId:plantel.id, jugador:editJugador, onClose:()=>{setEditJugador(null); load();}}),
+    !esLive && showConfig && h(CuotaBaseModal,{plantelId:plantel.id, cuotaBase, onClose:()=>{setShowConfig(false); load();}})
   );
 }
 
